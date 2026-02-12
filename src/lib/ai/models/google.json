@@ -1,9 +1,9 @@
 {
-  "origin": "google",
+  "origin" : "google",
   "models": [
     {
       "rank": 1,
-      "name": "gemini-3-flash",
+      "name": "Gemini 3 Flash",
       "category": "text",
       "description": "Highest quality text model. Use for complex reasoning, multi-step tasks, long context understanding, and when output quality matters most.",
       "limits": {
@@ -14,7 +14,7 @@
     },
     {
       "rank": 2,
-      "name": "gemini-2.5-flash",
+      "name": "Gemini 2.5 Flash",
       "category": "text",
       "description": "Strong general-purpose text model. Use for assistants, summaries, planning, and reliable reasoning with good performance.",
       "limits": {
@@ -25,7 +25,7 @@
     },
     {
       "rank": 3,
-      "name": "gemini-2.5-flash-lite",
+      "name": "Gemini 2.5 Flash Lite",
       "category": "text",
       "description": "Fast and cost-efficient text model. Use for short responses, simple logic, classification, and high-volume requests.",
       "limits": {
@@ -36,7 +36,7 @@
     },
     {
       "rank": 4,
-      "name": "gemma-3-27B",
+      "name": "Gemma 3 27B",
       "category": "text",
       "description": "Large open-weight model with solid language understanding. Use when Gemini models are unavailable or open models are required.",
       "limits": {
@@ -47,7 +47,7 @@
     },
     {
       "rank": 5,
-      "name": "gemma-3-12B",
+      "name": "Gemma 3 12B",
       "category": "text",
       "description": "Mid-size open model. Use for basic chat, summaries, and content generation without complex reasoning.",
       "limits": {
@@ -58,9 +58,31 @@
     },
     {
       "rank": 6,
-      "name": "gemma-3-4B",
+      "name": "Gemma 3 4B",
       "category": "text",
       "description": "Lightweight model for simple text generation and formatting tasks. Avoid complex or multi-step reasoning.",
+      "limits": {
+        "rpm": 30,
+        "tpm": 15000,
+        "rpd": 14400
+      }
+    },
+    {
+      "rank": 7,
+      "name": "Gemma 3 2B",
+      "category": "text",
+      "description": "Very basic text model. Use only for trivial transformations, tagging, or keyword-based tasks.",
+      "limits": {
+        "rpm": 30,
+        "tpm": 15000,
+        "rpd": 14400
+      }
+    },
+    {
+      "rank": 8,
+      "name": "Gemma 3 1B",
+      "category": "text",
+      "description": "Lowest-capability model. Use only as a fallback for extremely simple or constrained workloads.",
       "limits": {
         "rpm": 30,
         "tpm": 15000,

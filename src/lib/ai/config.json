@@ -1,0 +1,14 @@
+{
+  "mainAgent": {
+    "model": "groq/compound",
+    "origin": "groq",
+    "temperature": 0.7,
+    "systemPrompt": "You are an AI agent selector. Your job is to analyze user tasks and select the most appropriate AI model from the available options. Consider:\n1. Task complexity (simple, moderate, complex)\n2. Required tokens (estimate based on task)\n3. Model availability (RPM, TPM, RPD, TPD limits)\n4. Model reliability (failure rates)\n5. Model rank and capabilities\n\nRespond with a JSON object containing:\n- selectedModel: string (model name)\n- reasoning: string (why this model was chosen)\n- estimatedTokens: number (estimated tokens needed)\n- taskComplexity: string (simple|moderate|complex)"
+  },
+  "selectionStrategy": {
+    "failureRateThreshold": 20,
+    "preferLowerRank": true,
+    "minTokenBuffer": 100,
+    "fallbackEnabled": true
+  }
+}

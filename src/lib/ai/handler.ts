@@ -1,8 +1,9 @@
 import { ModelStore } from "./storage";
+import { TaskExecutor } from "./taskExecutor";
 import fs from "fs";
 import path from "path";
 
-const Storage = new ModelStore("./db.sqlite");
+const Storage = new ModelStore("src/lib/ai/db.sqlite");
 const modelsFolder = "./src/lib/ai/models";
 
 // --- Utility: standardized return function ---
@@ -45,9 +46,11 @@ function collectModels() {
 // --- AI Handler Class ---
 export class AiHandler {
   storage: ModelStore;
+  executor: TaskExecutor;
 
   constructor() {
     this.storage = Storage;
+    this.executor = new TaskExecutor(this.storage);
   }
 
   seed() {
@@ -64,7 +67,6 @@ export class AiHandler {
     for (const origin in modelsData) {
       const modelsArray = modelsData[origin];
 
-      console.log(modelsArray);
       const modelsToSeed = modelsArray.map((m: any) => {
         const model = {
           name: m.name,
@@ -72,15 +74,11 @@ export class AiHandler {
           rank: m.rank || 0,
           description: m.description || "",
           enabled: true,
-          rpm_used: 0,
-          rpmAllowed: 0,
-          tpm_used: 0,
+          rpmAllowed: m.limits?.rpm ?? 0,
           tpmTotal: m.limits?.tpm ?? 0,
-          rpd_used: 0,
           rpdTotal: m.limits?.rpd ?? 0,
+          tpdTotal: m.limits?.tpd,
         };
-
-        console.log("Prepared model:", model); // debug each on
 
         return model;
       });
@@ -91,16 +89,130 @@ export class AiHandler {
     console.log("All models have been seeded into the database.");
   }
 
-  test() {
-    // Log usage for "gemini-3-flash"
-    this.storage.logModelUsage("gemini-3-flash", 1, 100, 1);
+  async ask(task:string, type:string | undefined) {
+    console.log("═══ Excuting a task ═══\n");
+    try {
+      const result = await this.executor.executeTask(task, type);
 
-    // Get usage for "gemini-3-flash"
-    const usage = this.storage.getModelUsage("gemini-3-flash");
-    console.log("Current usage for gemini-3-flash:", usage);
+      if (result.success) {
+        console.log("Task Result:");
+        console.log(`  Model: ${result.modelUsed}`);
+        console.log(`  Complexity: ${result.analysis.taskComplexity}`);
+        console.log(`  Tokens Used: ${result.tokensUsed}`);
+        console.log(`  Response: "${result.response?.substring(0, 100)}..."\n`);
+        return result
+      } else {
+        console.log(`✗ Task failed: ${result.error}\n`);
+      }
+    } catch (error: any) {
+      console.log(`Task failed`);
+    }
 
-    // Check available models
+  }
+
+  async test() {
+    console.log("\n╔══════════════════════════════════════════════════════════════╗");
+    console.log("║         TESTING INTELLIGENT AI AGENT SYSTEM                 ║");
+    console.log("╚══════════════════════════════════════════════════════════════╝\n");
+
+    // Test 1: Display initial model statistics
+    console.log("═══ Test 1: Initial Model Statistics ═══\n");
+    const initialStats = this.storage.getModelStats();
+    console.log(`Total models: ${initialStats.length}\n`);
+    initialStats.slice(0, 3).forEach((stat) => {
+      console.log(`${stat.name} (${stat.origin}):`);
+      console.log(`  Rank: ${stat.rank} | Enabled: ${stat.enabled ? "✓" : "✗"}`);
+      console.log(`  Limits: ${stat.rpmAllowed} RPM, ${stat.tpmTotal} TPM`);
+      console.log(`  Tasks: ${stat.successfulTasks} succeeded, ${stat.failedTasks} failed\n`);
+    });
+
+    // Test 2: Main agent configuration
+    console.log("═══ Test 2: Main Agent Configuration ═══\n");
+    const mainAgentConfig = this.executor.getMainAgent().getMainAgentConfig();
+    console.log(`Main Agent Model: ${mainAgentConfig.model}`);
+    console.log(`Origin: ${mainAgentConfig.origin}`);
+    console.log(`Temperature: ${mainAgentConfig.temperature}\n`);
+
+    // Test 3: Execute simple task
+    console.log("═══ Test 3: Execute Simple Task ═══\n");
+    try {
+      const result1 = await this.executor.executeTask(
+        "What is 2+2? Give a very brief answer.",
+        "math"
+      );
+
+      if (result1.success) {
+        console.log("Task Result:");
+        console.log(`  Model: ${result1.modelUsed}`);
+        console.log(`  Complexity: ${result1.analysis.taskComplexity}`);
+        console.log(`  Tokens Used: ${result1.tokensUsed}`);
+        console.log(`  Response: "${result1.response?.substring(0, 100)}..."\n`);
+      } else {
+        console.log(`✗ Task failed: ${result1.error}\n`);
+      }
+    } catch (error: any) {
+      console.log(`⚠ Test 3 skipped: ${error.message}\n`);
+    }
+
+    // Test 4: Execute complex task
+    console.log("═══ Test 4: Execute Complex Task ═══\n");
+    try {
+      const result2 = await this.executor.executeTask(
+        "Explain quantum computing in one sentence.",
+        "explanation"
+      );
+
+      if (result2.success) {
+        console.log("Task Result:");
+        console.log(`  Model: ${result2.modelUsed}`);
+        console.log(`  Complexity: ${result2.analysis.taskComplexity}`);
+        console.log(`  Tokens Used: ${result2.tokensUsed}`);
+        console.log(`  Response: "${result2.response?.substring(0, 100)}..."\n`);
+      } else {
+        console.log(`✗ Task failed: ${result2.error}\n`);
+      }
+    } catch (error: any) {
+      console.log(`⚠ Test 4 skipped: ${error.message}\n`);
+    }
+
+    // Test 5: Check updated statistics after tasks
+    console.log("═══ Test 5: Post-Execution Statistics ═══\n");
+    const finalStats = this.storage.getModelStats();
+    finalStats.slice(0, 3).forEach((stat) => {
+      const failureRate = this.storage.getModelFailureRate(stat.name);
+      const successfulTasks = stat.successfulTasks || 0;
+      const failedTasks = stat.failedTasks || 0;
+      const totalTasks = successfulTasks + failedTasks;
+      const successRate = totalTasks > 0
+        ? ((successfulTasks / totalTasks) * 100).toFixed(1)
+        : "N/A";
+
+      console.log(`${stat.name}:`);
+      console.log(`  Usage: ${stat.rpmUsed}/${stat.rpmAllowed} RPM, ${stat.tpmUsed}/${stat.tpmTotal} TPM`);
+      console.log(`  Tasks: ${successfulTasks} ✓ / ${failedTasks} ✗ (${successRate}% success)`);
+      console.log(`  Recent Failure Rate: ${failureRate.toFixed(1)}%\n`);
+    });
+
+    // Test 6: Test rate limiting
+    console.log("═══ Test 6: Rate Limiting Test ═══\n");
     const available = this.storage.getAllAvailableModels(400);
-    console.log("Available models:", available);
+    console.log(`Available models (≥400 tokens): ${available.length}`);
+    available.forEach((m) => {
+      const usage = this.storage.getModelUsage(m.name);
+      const rpmAvail = m.rpmAllowed - usage.rpmUsed;
+      const tpmAvail = m.tpmTotal - usage.tpmUsed;
+      console.log(`  ✓ ${m.name}: ${rpmAvail}/${m.rpmAllowed} RPM, ${tpmAvail}/${m.tpmTotal} TPM available`);
+    });
+
+    // Test 7: Database maintenance
+    console.log("\n═══ Test 7: Database Maintenance ═══\n");
+    const cleanedUsage = this.storage.cleanupOldLogs();
+    const cleanedTasks = this.storage.cleanupOldTaskLogs(7);
+    console.log(`Cleaned ${cleanedUsage} old usage logs (>24h)`);
+    console.log(`Cleaned ${cleanedTasks} old task logs (>7 days)\n`);
+
+    console.log("╔══════════════════════════════════════════════════════════════╗");
+    console.log("║                    TESTING COMPLETE                          ║");
+    console.log("╚══════════════════════════════════════════════════════════════╝\n");
   }
 }

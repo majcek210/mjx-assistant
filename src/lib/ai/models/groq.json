@@ -1,0 +1,38 @@
+{
+  "origin": "groq",
+  "models": [
+    {
+      "rank": 1,
+      "name": "llama-3.3-70b-versatile",
+      "category": "text",
+      "description": "Most capable LLaMA model. Use for complex reasoning, long context understanding, and when output quality matters most. Fast inference on Groq.",
+      "limits": {
+        "rpm": 30,
+        "tpm": 20000,
+        "rpd": 14400
+      }
+    },
+    {
+      "rank": 2,
+      "name": "llama-3.1-8b-instant",
+      "category": "text",
+      "description": "Fastest lightweight model. Use for simple tasks, quick responses, and high-volume requests. Excellent for classification and extraction.",
+      "limits": {
+        "rpm": 30,
+        "tpm": 20000,
+        "rpd": 14400
+      }
+    },
+    {
+      "rank": 3,
+      "name": "groq/compound",
+      "category": "text",
+      "description": "test",
+      "limits": {
+        "rpm": 30,
+        "tpm": 15000,
+        "rpd": 14400
+      }
+    }
+  ]
+}

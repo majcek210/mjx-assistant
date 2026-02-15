@@ -1,5 +1,6 @@
 import { Events, EmbedBuilder } from "discord.js";
 import { AiHandler } from "../../lib/ai/handler";
+import parse from "../../lib/reponseParser";
 
 const TRIGGER_KEYWORDS = ["remind", "task", "help", "hi", "hello"];
 
@@ -39,19 +40,19 @@ export default {
         const formatLimit = (used: number, limit: number): string => {
           const remaining = limit - used;
           const percentageLeft = (remaining / limit) * 100;
-          
+
           // Show full number if less than 1% capacity remaining
           if (percentageLeft < 1) {
             return `${used.toLocaleString()}/${limit.toLocaleString()}`;
           }
-          
+
           // Format with abbreviations
           const formatNum = (n: number): string => {
             if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "m";
             if (n >= 1_000) return (n / 1_000).toFixed(0) + "k";
             return n.toString();
           };
-          
+
           return `${formatNum(used)}/${formatNum(limit)}`;
         };
 
@@ -67,24 +68,35 @@ export default {
 
           // Format model limits line with smart number formatting
           aiDetails += `• **Model Limits:** RPM: \`${formatLimit(rpm.used, rpm.limit)}\`, TPM: \`${formatLimit(tpm.used, tpm.limit)}\`, RPD: \`${formatLimit(rpd.used, rpd.limit)}\`, TPD: \`${formatLimit(tpd.used, tpd.limit)}\``;
-
         }
+
+        const { content, tools } = parse(response?.response);
+
+        const toolList =
+          tools.length > 0
+            ? tools.map((t: any) => `• ${t.name}`).join("\n")
+            : "None";
 
         // Create embedded response
         const embed = new EmbedBuilder()
-          .setColor(0x57F287)
+          .setColor(0x57f287)
           .setTitle("Response")
           .addFields(
             {
               name: "Summary",
-              value: response?.response || "No response generated",
+              value: content || "No response generated",
               inline: false,
             },
             {
               name: "AI Details",
               value: aiDetails,
               inline: false,
-            }
+            },
+            {
+              name: "Tools Used",
+              value: toolList,
+              inline: false,
+            },
           )
           .setFooter({ text: `Requested by ${message.author.username}` })
           .setTimestamp();

@@ -1,9 +1,16 @@
 import { ModelStore } from "./storage";
 import { MainAgent, TaskAnalysis } from "./mainAgent";
 import { AdapterFactory } from "./adapters/AdapterFactory";
-import dotenv from "dotenv";
+import * as fs from "fs";
+import * as path from "path";
 
-dotenv.config();
+
+export type ModelLimits = {
+  rpm: { used: number; limit: number };
+  tpm: { used: number; limit: number };
+  rpd: { used: number; limit: number };
+  tpd: { used: number; limit: number };
+};
 
 export type TaskResult = {
   success: boolean;
@@ -12,15 +19,31 @@ export type TaskResult = {
   modelUsed: string;
   tokensUsed: number;
   analysis: TaskAnalysis;
+  limits?: ModelLimits;
 };
 
 export class TaskExecutor {
   private storage: ModelStore;
   private mainAgent: MainAgent;
+  private agentPrompt: string;
 
   constructor(storage: ModelStore) {
     this.storage = storage;
     this.mainAgent = new MainAgent(storage);
+
+    // Load agent prompt from config.json
+    try {
+      const configPath = path.join(__dirname, "config.json");
+      const configData = fs.readFileSync(configPath, "utf-8");
+      const config = JSON.parse(configData);
+      this.agentPrompt = config.mainAgent?.agentPrompt || "";
+      if (this.agentPrompt) {
+        console.log("✓ Agent instructions loaded from config.json");
+      }
+    } catch (error) {
+      console.warn("⚠ Could not load agent instructions from config.json");
+      this.agentPrompt = "";
+    }
 
     // Check if at least one AI provider is configured
     const availableOrigins = AdapterFactory.getAvailableOrigins();
@@ -32,6 +55,8 @@ export class TaskExecutor {
 
     console.log(`✓ Available AI providers: ${availableOrigins.join(", ")}`);
   }
+
+ 
 
   /**
    * Execute a task using intelligent model selection.
@@ -50,16 +75,16 @@ export class TaskExecutor {
       console.log("Step 1: Consulting main agent for model selection...");
       const analysis = await this.mainAgent.selectModelForTask(userTask);
 
-      console.log(`✓ Main agent selected: ${analysis.selectedModel}`);
-      console.log(`  Reasoning: ${analysis.reasoning}`);
-      console.log(`  Complexity: ${analysis.taskComplexity}`);
-      console.log(`  Estimated tokens: ${analysis.estimatedTokens}\n`);
+      // Prepend agent instructions to the task
+      const taskWithInstructions = this.agentPrompt
+        ? `${this.agentPrompt}\n\nUser Task: ${userTask}`
+        : userTask;
 
       // Step 2: Execute the task with the selected model
       console.log(`Step 2: Executing task with ${analysis.selectedModel}...`);
       const result = await this.executeWithModel(
         analysis.selectedModel,
-        userTask,
+        taskWithInstructions,
         taskType,
         analysis
       );
@@ -91,17 +116,20 @@ export class TaskExecutor {
     taskType: string,
     analysis: TaskAnalysis
   ): Promise<TaskResult> {
-    try {
-      // Get the model's origin from storage
-      const allModels = this.storage.getModelStats();
-      const modelInfo = allModels.find((m) => m.name === modelName);
+    // Get the model's origin from storage before try block
+    const allModels = this.storage.getModelStats();
+    const modelInfo = allModels.find((m) => m.name === modelName);
 
-      if (!modelInfo) {
-        throw new Error(`Model not found in database: ${modelName}`);
-      }
+    if (!modelInfo) {
+      throw new Error(`Model not found in database: ${modelName}`);
+    }
+
+    try {
 
       // Get the appropriate adapter
       const adapter = AdapterFactory.getAdapter(modelInfo.origin);
+
+      
 
       const startTime = Date.now();
       const result = await adapter.generateContent({
@@ -121,12 +149,22 @@ export class TaskExecutor {
       this.storage.logModelUsage(modelName, 1, tokensUsed);
       this.storage.logTaskOutcome(modelName, taskType, true, tokensUsed);
 
+      // Get current usage and build limits info
+      const usage = this.storage.getModelUsage(modelName);
+      const limits: ModelLimits = {
+        rpm: { used: usage.rpmUsed, limit: modelInfo.rpmAllowed || 0 },
+        tpm: { used: usage.tpmUsed, limit: modelInfo.tpmTotal || 0 },
+        rpd: { used: usage.rpdUsed, limit: modelInfo.rpdTotal || 0 },
+        tpd: { used: usage.tpdUsed, limit: modelInfo.tpdTotal || 0 },
+      };
+
       return {
         success: true,
         response: text,
         modelUsed: modelName,
         tokensUsed: tokensUsed,
         analysis: analysis,
+        limits: limits,
       };
     } catch (error: any) {
       console.error(`✗ Execution failed with ${modelName}:`, error.message);
@@ -139,6 +177,15 @@ export class TaskExecutor {
         0,
         error.message
       );
+
+      // Get usage info for failed model
+      const failureUsage = this.storage.getModelUsage(modelName);
+      const failureLimits: ModelLimits = {
+        rpm: { used: failureUsage.rpmUsed, limit: modelInfo.rpmAllowed || 0 },
+        tpm: { used: failureUsage.tpmUsed, limit: modelInfo.tpmTotal || 0 },
+        rpd: { used: failureUsage.rpdUsed, limit: modelInfo.rpdTotal || 0 },
+        tpd: { used: failureUsage.tpdUsed, limit: modelInfo.tpdTotal || 0 },
+      };
 
       // Attempt retry with next best model if configured
       const retryResult = await this.retryWithFallback(
@@ -158,6 +205,7 @@ export class TaskExecutor {
         modelUsed: modelName,
         tokensUsed: 0,
         analysis: analysis,
+        limits: failureLimits,
       };
     }
   }
@@ -233,6 +281,13 @@ export class TaskExecutor {
 
     console.log("✗ All fallback attempts failed\n");
     return null;
+  }
+
+  /**
+   * Get the loaded agent prompt.
+   */
+  getAgentPrompt(): string {
+    return this.agentPrompt;
   }
 
   /**

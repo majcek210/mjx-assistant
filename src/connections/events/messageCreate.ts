@@ -1,10 +1,9 @@
 import { Events, EmbedBuilder } from "discord.js";
-import { AiHandler } from "../../lib/ai/handler";
+import AIAgent from "../../configs/AIAgent";
 import parse from "../../lib/reponseParser";
+import ToolExecutor from "../../configs/toolExecutor"
 
-const TRIGGER_KEYWORDS = ["remind", "task", "help", "hi", "hello"];
 
-const AIAgent = new AiHandler();
 
 export default {
   name: Events.MessageCreate,
@@ -24,11 +23,9 @@ export default {
 
     // Check if message is directed at bot or contains trigger keywords
     const isBotMentioned = message.mentions.has(botId);
-    const hasKeyword = TRIGGER_KEYWORDS.some((keyword) =>
-      userMessage.toLowerCase().includes(keyword),
-    );
 
-    if (isBotMentioned || hasKeyword) {
+
+    if (isBotMentioned) {
       try {
         await message.channel.sendTyping();
 
@@ -72,19 +69,88 @@ export default {
 
         const { content, tools } = parse(response?.response);
 
+        console.log(tools);
+
+        // Initialize and execute tools
+        let toolResults: Array<{ name: string; success: boolean; result?: any; error?: string }> = [];
+
+        if (tools.length > 0) {
+          try {
+
+            for (const tool of tools) {
+              try {
+                const result = await ToolExecutor.executeTool(tool.name, tool.arguments || {});
+                toolResults.push({
+                  name: tool.name,
+                  success: result.success,
+                  result: result.success ? result.result : undefined,
+                  error: !result.success ? result.error : undefined,
+                });
+              } catch (error) {
+                toolResults.push({
+                  name: tool.name,
+                  success: false,
+                  error: error instanceof Error ? error.message : "Unknown error",
+                });
+              }
+            }
+          } catch (error) {
+            console.error("Failed to initialize tool executor:", error);
+          }
+        }
+
         const toolList =
           tools.length > 0
             ? tools.map((t: any) => `• ${t.name}`).join("\n")
             : "None";
 
-        // Create embedded response
+        // Format tool results for display
+        let toolResultsText = "None";
+        let finalContent = content;
+
+        if (toolResults.length > 0) {
+          toolResultsText = toolResults
+            .map((tr) => {
+              if (tr.success) {
+                return `✅ **${tr.name}:** ${JSON.stringify(tr.result).substring(0, 100)}`;
+              } else {
+                return `❌ **${tr.name}:** ${tr.error}`;
+              }
+            })
+            .join("\n");
+
+          // Pass tool results back to AI for analysis
+          console.log("📤 Sending tool results back to AI for analysis...");
+          const toolResultsContext = toolResults
+            .map((tr) => {
+              if (tr.success) {
+                return `Tool: ${tr.name}\nResult: ${JSON.stringify(tr.result)}`;
+              } else {
+                return `Tool: ${tr.name}\nError: ${tr.error}`;
+              }
+            })
+            .join("\n\n");
+
+          const refinedPrompt = `Original user request: "${userMessage}"\n\nI executed the following tools:\n\n${toolResultsContext}\n\nNow analyze these tool results and provide a clear, concise summary for the user.`;
+
+          try {
+            const refinedResponse = await AIAgent.ask(refinedPrompt, "analysis");
+            const { content: refinedContent } = parse(refinedResponse?.response);
+            finalContent = refinedContent || content;
+            console.log("✅ AI analysis complete");
+          } catch (error) {
+            console.error("Failed to get AI analysis of tool results:", error);
+            // Keep original content if AI analysis fails
+          }
+        }
+
         const embed = new EmbedBuilder()
           .setColor(0x57f287)
           .setTitle("Response")
           .addFields(
             {
               name: "Summary",
-              value: content || "No response generated",
+              value: finalContent || "No response generated",
               inline: false,
             },
             {
@@ -95,6 +161,11 @@ export default {
             {
               name: "Tools Used",
               value: toolList,
+              inline: false,
+            },
+            {
+              name: "Tool Results",
+              value: toolResultsText,
               inline: false,
             },
           )

@@ -3,7 +3,7 @@ import { MainAgent, TaskAnalysis } from "./mainAgent";
 import { AdapterFactory } from "./adapters/AdapterFactory";
 import * as fs from "fs";
 import * as path from "path";
-
+import ToolExecutor from "../../configs/toolExecutor";
 
 export type ModelLimits = {
   rpm: { used: number; limit: number };
@@ -49,14 +49,12 @@ export class TaskExecutor {
     const availableOrigins = AdapterFactory.getAvailableOrigins();
     if (availableOrigins.length === 0) {
       throw new Error(
-        "No AI providers configured. Set at least one API key in .env (GEMINI_API_KEY or GROQ_API_KEY)"
+        "No AI providers configured. Set at least one API key in .env (GEMINI_API_KEY or GROQ_API_KEY)",
       );
     }
 
     console.log(`✓ Available AI providers: ${availableOrigins.join(", ")}`);
   }
-
- 
 
   /**
    * Execute a task using intelligent model selection.
@@ -64,7 +62,7 @@ export class TaskExecutor {
    */
   async executeTask(
     userTask: string,
-    taskType: string = "general"
+    taskType: string = "general",
   ): Promise<TaskResult> {
     console.log(`\n=== Executing Task ===`);
     console.log(`Task: "${userTask}"`);
@@ -75,18 +73,21 @@ export class TaskExecutor {
       console.log("Step 1: Consulting main agent for model selection...");
       const analysis = await this.mainAgent.selectModelForTask(userTask);
 
-      // Prepend agent instructions to the task
-      const taskWithInstructions = this.agentPrompt
-        ? `${this.agentPrompt}\n\nUser Task: ${userTask}`
-        : userTask;
+      const tools = await ToolExecutor.listTools();
+      const formattedTools = tools
+        .map((tool) => `- ${tool.name}: ${tool.description}`)
+        .join("\n");
 
+      const taskWithInstructions = this.agentPrompt
+        ? `${this.agentPrompt}\n\nAvailable Tools:\n${formattedTools}\n\nUser Task: ${userTask}`
+        : `Available Tools:\n${formattedTools}\nUser Task: ${userTask}`;
       // Step 2: Execute the task with the selected model
       console.log(`Step 2: Executing task with ${analysis.selectedModel}...`);
       const result = await this.executeWithModel(
         analysis.selectedModel,
         taskWithInstructions,
         taskType,
-        analysis
+        analysis,
       );
 
       return result;
@@ -114,7 +115,7 @@ export class TaskExecutor {
     modelName: string,
     userTask: string,
     taskType: string,
-    analysis: TaskAnalysis
+    analysis: TaskAnalysis,
   ): Promise<TaskResult> {
     // Get the model's origin from storage before try block
     const allModels = this.storage.getModelStats();
@@ -125,11 +126,8 @@ export class TaskExecutor {
     }
 
     try {
-
       // Get the appropriate adapter
       const adapter = AdapterFactory.getAdapter(modelInfo.origin);
-
-      
 
       const startTime = Date.now();
       const result = await adapter.generateContent({
@@ -139,7 +137,8 @@ export class TaskExecutor {
       const endTime = Date.now();
 
       const text = result.text || "";
-      const tokensUsed = result.tokensUsed || Math.ceil((userTask.length + text.length) / 4);
+      const tokensUsed =
+        result.tokensUsed || Math.ceil((userTask.length + text.length) / 4);
 
       console.log(`✓ Task completed successfully in ${endTime - startTime}ms`);
       console.log(`  Tokens used: ~${tokensUsed}`);
@@ -170,13 +169,7 @@ export class TaskExecutor {
       console.error(`✗ Execution failed with ${modelName}:`, error.message);
 
       // Log the failure
-      this.storage.logTaskOutcome(
-        modelName,
-        taskType,
-        false,
-        0,
-        error.message
-      );
+      this.storage.logTaskOutcome(modelName, taskType, false, 0, error.message);
 
       // Get usage info for failed model
       const failureUsage = this.storage.getModelUsage(modelName);
@@ -192,7 +185,7 @@ export class TaskExecutor {
         userTask,
         taskType,
         modelName,
-        analysis
+        analysis,
       );
 
       if (retryResult) {
@@ -219,7 +212,7 @@ export class TaskExecutor {
     taskType: string,
     failedModel: string,
     originalAnalysis: TaskAnalysis,
-    triedModels: Set<string> = new Set()
+    triedModels: Set<string> = new Set(),
   ): Promise<TaskResult | null> {
     // Add failed model to tried set
     triedModels.add(failedModel);
@@ -248,7 +241,9 @@ export class TaskExecutor {
 
       try {
         // Check if adapter is available before trying
-        const modelInfo = this.storage.getModelStats().find(m => m.name === fallbackModel.name);
+        const modelInfo = this.storage
+          .getModelStats()
+          .find((m) => m.name === fallbackModel.name);
         if (!modelInfo) continue;
 
         try {
@@ -267,7 +262,7 @@ export class TaskExecutor {
             ...originalAnalysis,
             selectedModel: fallbackModel.name,
             reasoning: `Fallback after ${failedModel} failed`,
-          }
+          },
         );
 
         console.log(`✓ Fallback execution succeeded\n`);

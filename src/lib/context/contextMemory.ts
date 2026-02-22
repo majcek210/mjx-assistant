@@ -9,11 +9,12 @@
  *    (the user is explicitly asking the bot to look at it), then stop.
  * 4. Chain stops after the first non-bot/non-tagged-bot message on deeper hops.
  * 5. Messages older than MAX_CHAIN_AGE_MS are ignored.
- * 6. Each entry truncated to MAX_MESSAGE_CHARS.
+ * 6. Each entry truncated to MAX_MESSAGE_CHARS; first-hop reference uses MAX_REFERENCED_CHARS.
  */
 
 const MAX_CHAIN_DEPTH = 5;
 const MAX_MESSAGE_CHARS = 500;
+const MAX_REFERENCED_CHARS = 2000; // higher limit for the directly-referenced message
 const MAX_CHAIN_AGE_MS = 30 * 60 * 1000; // 30 minutes
 
 export interface ContextEntry {
@@ -26,17 +27,23 @@ export interface ConversationContext {
   hasContext: boolean;
 }
 
-function extractContent(msg: any, botId: string): string {
+function extractContent(msg: any, botId: string, maxChars: number = MAX_MESSAGE_CHARS): string {
   if (msg.author.id === botId && msg.embeds?.length > 0) {
     const embed = msg.embeds[0];
-    const desc = embed?.data?.description ?? embed?.description ?? "";
-    if (desc) return desc.slice(0, MAX_MESSAGE_CHARS);
+    // Try description first (some embed styles use setDescription)
+    const desc: string = embed?.data?.description ?? embed?.description ?? "";
+    if (desc) return desc.slice(0, maxChars);
+    // Fall back to embed fields — the bot's response lives in the "Summary" field
+    const fields: any[] = embed?.data?.fields ?? embed?.fields ?? [];
+    const summaryField = fields.find((f: any) => f.name === "Summary");
+    const fieldContent: string = summaryField?.value ?? fields[0]?.value ?? "";
+    if (fieldContent) return fieldContent.slice(0, maxChars);
   }
 
   return (msg.content ?? "")
     .replace(new RegExp(`<@!?${botId}>\\s*`, "g"), "")
     .trim()
-    .slice(0, MAX_MESSAGE_CHARS);
+    .slice(0, maxChars);
 }
 
 /**
@@ -45,6 +52,9 @@ function extractContent(msg: any, botId: string): string {
  * Key fix: on the FIRST hop, if the referenced message has no bot involvement,
  * we still include it (the user is asking the bot to process/reference it) but
  * we do NOT continue walking further up the chain from there.
+ *
+ * First-hop messages are allowed MAX_REFERENCED_CHARS (2000) so that long texts
+ * (e.g. "summarize this") are not truncated too aggressively.
  */
 export async function buildContext(
   message: any,
@@ -71,22 +81,24 @@ export async function buildContext(
 
     const isFromBot = refMsg.author.id === botId;
     const taggedBot = refMsg.mentions?.has?.(botId) ?? false;
+    // First hop gets a larger char limit so long referenced texts aren't truncated
+    const contentLimit = firstHop ? MAX_REFERENCED_CHARS : MAX_MESSAGE_CHARS;
 
     if (isFromBot) {
       // Bot reply → always relevant, continue walking
-      const content = extractContent(refMsg, botId);
+      const content = extractContent(refMsg, botId, contentLimit);
       if (content) chain.unshift({ role: "bot", content });
       currentRef = refMsg.reference ?? null;
     } else if (taggedBot) {
       // User message that tagged the bot → include, continue walking
-      const content = extractContent(refMsg, botId);
+      const content = extractContent(refMsg, botId, contentLimit);
       if (content) chain.unshift({ role: "user", content });
       currentRef = refMsg.reference ?? null;
     } else if (firstHop) {
       // First hop to a plain user↔user message.
       // The current user is replying to it AND tagging the bot → include it as
       // the "thing being referenced", but stop chain here (it's not bot history).
-      const content = extractContent(refMsg, botId);
+      const content = extractContent(refMsg, botId, contentLimit);
       if (content) chain.unshift({ role: "user", content });
       break; // don't walk further from a non-bot message
     } else {

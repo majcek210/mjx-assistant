@@ -1,0 +1,25 @@
+# Runtime artifacts (built inside Docker, never needed from host)
+node_modules/
+dist/
+
+# Secrets — never bake these into an image
+.env
+.env.*
+*.sqlite
+data/
+
+# Version control
+.git/
+.gitignore
+
+# Test infrastructure (not needed in production image)
+tests/
+jest.config.js
+tsconfig.test.json
+
+# Documentation
+*.md
+CLAUDE.md
+
+# CI/CD configuration
+.github/

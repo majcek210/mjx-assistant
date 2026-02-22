@@ -1,4 +1,4 @@
-import { ModelStore } from "./storage";
+import { IStorage } from "./storage/IStorage";
 import { AdapterFactory } from "./adapters/AdapterFactory";
 import fs from "fs";
 import path from "path";
@@ -13,7 +13,7 @@ export type TaskAnalysis = {
   taskComplexity: "simple" | "moderate" | "complex";
 };
 
-export type AgentConfig = {
+type AgentConfig = {
   mainAgent: {
     model: string;
     origin: string;
@@ -29,19 +29,20 @@ export type AgentConfig = {
 };
 
 export class MainAgent {
-  private storage: ModelStore;
+  private storage: IStorage;
   private config: AgentConfig;
   private mainAgentModel: string;
   private mainAgentOrigin: string;
 
-  constructor(storage: ModelStore) {
+  constructor(storage: IStorage) {
     this.storage = storage;
     this.config = this.loadConfig();
 
     // Load main agent from .env or fallback to config.json
     const envMainAgent = process.env.MAIN_AGENT_MODEL;
     if (envMainAgent) {
-      const [origin, model] = envMainAgent.split(":");
+      const [origin, ...modelParts] = envMainAgent.split(":");
+      const model = modelParts.join(":");
       if (!origin || !model) {
         throw new Error(
           "MAIN_AGENT_MODEL must be in format 'origin:model' (e.g., google:gemini-2.5-flash)"
@@ -49,83 +50,77 @@ export class MainAgent {
       }
       this.mainAgentOrigin = origin;
       this.mainAgentModel = model;
-      console.log(`✓ Main agent loaded from .env: ${origin}:${model}`);
+      console.log(`✓ Main agent from .env: ${origin}:${model}`);
     } else {
-      // Fallback to config.json
       this.mainAgentOrigin = this.config.mainAgent.origin;
       this.mainAgentModel = this.config.mainAgent.model;
-      console.log(
-        `ℹ Main agent from config.json: ${this.mainAgentOrigin}:${this.mainAgentModel}`
-      );
-      console.log("  Tip: Set MAIN_AGENT_MODEL in .env to override");
+      console.log(`ℹ Main agent from config.json: ${this.mainAgentOrigin}:${this.mainAgentModel}`);
     }
 
-    // Verify the adapter is available
     try {
       AdapterFactory.getAdapter(this.mainAgentOrigin);
     } catch (error: any) {
-      throw new Error(
-        `Failed to initialize main agent: ${error.message}`
-      );
+      throw new Error(`Failed to initialize main agent: ${error.message}`);
     }
   }
 
   private loadConfig(): AgentConfig {
-    const configPath = path.join(__dirname, "config.json");
-    const rawData = fs.readFileSync(configPath, "utf-8");
-    return JSON.parse(rawData);
+    // Load from root config.json
+    const configPath = path.join(process.cwd(), "config.json");
+    const raw = fs.readFileSync(configPath, "utf-8");
+    const data = JSON.parse(raw);
+
+    // Provide safe defaults for selectionStrategy
+    if (!data.selectionStrategy) {
+      data.selectionStrategy = {
+        failureRateThreshold: 20,
+        preferLowerRank: true,
+        minTokenBuffer: 100,
+        fallbackEnabled: true,
+      };
+    }
+
+    return data as AgentConfig;
   }
 
   /**
    * Analyze a task and select the most appropriate model.
-   * Uses the configured main agent to make an intelligent decision.
    */
   async selectModelForTask(userTask: string): Promise<TaskAnalysis> {
     try {
-      // Get available models with their current stats
-      const availableModels = this.getAvailableModelsWithStats();
+      const availableModels = await this.getAvailableModelsWithStats();
 
       if (availableModels.length === 0) {
-        throw new Error("No models available - all rate limits exceeded");
+        throw new Error("No models available — all rate limits exceeded");
       }
 
-      // Prepare context for the main agent
-      const modelsContext = this.formatModelsForAgent(availableModels);
+      const { formatted } = await this.buildModelsContext(availableModels);
+      const analysis = await this.consultMainAgent(userTask, formatted);
 
-      // Ask the main agent to analyze and select
-      const analysis = await this.consultMainAgent(userTask, modelsContext);
-
-      // Validate the selected model is actually available
       const selectedModel = availableModels.find(
         (m) => m.name === analysis.selectedModel
       );
 
       if (!selectedModel) {
-        console.warn(
-          `⚠ Main agent selected unavailable model: ${analysis.selectedModel}`
-        );
-        // Fallback to best available model
+        console.warn(`⚠ Main agent selected unavailable model: ${analysis.selectedModel}`);
         return this.fallbackSelection(availableModels, analysis.estimatedTokens);
       }
 
-      // Double-check the model has capacity for the estimated tokens
-      const hasCapacity = this.verifyModelCapacity(
+      const hasCapacity = await this.verifyModelCapacity(
         selectedModel.name,
         analysis.estimatedTokens
       );
 
       if (!hasCapacity) {
-        console.warn(
-          `⚠ Selected model lacks capacity for ${analysis.estimatedTokens} tokens`
-        );
+        console.warn(`⚠ Selected model lacks capacity for ${analysis.estimatedTokens} tokens`);
         return this.fallbackSelection(availableModels, analysis.estimatedTokens);
       }
 
       return analysis;
     } catch (error) {
       console.error("Error in main agent selection:", error);
-      // Emergency fallback: select first available model
-      const available = this.storage.getAllAvailableModels(400);
+      // Emergency fallback: first available model
+      const available = await this.storage.getAllAvailableModels(400);
       if (available.length > 0) {
         return {
           selectedModel: available[0].name,
@@ -138,14 +133,13 @@ export class MainAgent {
     }
   }
 
-  /**
-   * Consult the main agent AI to analyze the task and select a model.
-   */
+  /** Consult the main agent AI to select a model. */
   private async consultMainAgent(
     userTask: string,
     modelsContext: string
   ): Promise<TaskAnalysis> {
-    console.log(`Using main agent: ${this.mainAgentModel}`)
+    console.log(`Using main agent: ${this.mainAgentModel}`);
+
     const prompt = `${this.config.mainAgent.systemPrompt}
 
 AVAILABLE MODELS:
@@ -162,26 +156,19 @@ Analyze this task and select the best model. Respond ONLY with valid JSON matchi
   "taskComplexity": "simple"
 }`;
 
-    // Get the adapter for the main agent's origin
     const adapter = AdapterFactory.getAdapter(this.mainAgentOrigin);
-
     const result = await adapter.generateContent({
       model: this.mainAgentModel,
-      prompt: prompt,
+      prompt,
       temperature: this.config.mainAgent.temperature,
     });
 
     const text = result.text || "";
-
-    // Extract JSON from response (handle markdown code blocks)
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
-      throw new Error("Main agent did not return valid JSON");
-    }
+    if (!jsonMatch) throw new Error("Main agent did not return valid JSON");
 
     const analysis: TaskAnalysis = JSON.parse(jsonMatch[0]);
 
-    // Validate the response structure
     if (
       !analysis.selectedModel ||
       !analysis.reasoning ||
@@ -195,118 +182,87 @@ Analyze this task and select the best model. Respond ONLY with valid JSON matchi
   }
 
   /**
-   * Get available models with their statistics for decision-making.
-   * Filters out models with high failure rates and unavailable providers.
+   * Get available models with stats, filtering out high-failure or unconfigured ones.
+   * Pre-fetches failure rates to avoid async calls inside .filter().
    */
-  private getAvailableModelsWithStats() {
-    const stats = this.storage.getModelStats();
+  private async getAvailableModelsWithStats() {
+    const stats = await this.storage.getModelStats();
 
-    return stats
-      .filter((model) => {
-        if (!model.enabled) return false;
+    // Pre-fetch failure rates in parallel (avoids async inside .filter)
+    const failureRates = await Promise.all(
+      stats.map((m) => this.storage.getModelFailureRate(m.name))
+    );
 
-        // Check if adapter is available for this model's origin
-        try {
-          AdapterFactory.getAdapter(model.origin);
-        } catch (error) {
-          // Provider not configured, skip this model silently
-          return false;
-        }
+    return stats.filter((model, i) => {
+      if (!model.enabled) return false;
 
-        // Check failure rate
-        const failureRate = this.storage.getModelFailureRate(model.name);
-        if (failureRate > this.config.selectionStrategy.failureRateThreshold) {
-          console.log(
-            `  ⚠ Filtering out ${model.name} due to high failure rate: ${failureRate.toFixed(1)}%`
-          );
-          return false;
-        }
+      try {
+        AdapterFactory.getAdapter(model.origin);
+      } catch {
+        return false; // Provider not configured
+      }
 
-        // Must have some capacity
-        const hasRPM = model.rpmAllowed - model.rpmUsed >= 1;
-        const hasRPD = model.rpdTotal - model.rpdUsed >= 1;
-        return hasRPM && hasRPD;
-      })
-      .sort((a, b) => {
-        // Sort by origin first, then rank within origin
-        if (a.origin !== b.origin) {
-          return a.origin.localeCompare(b.origin);
-        }
-        return a.rank - b.rank;
-      });
+      if (failureRates[i] > this.config.selectionStrategy.failureRateThreshold) {
+        console.log(`  ⚠ Filtering ${model.name}: failure rate ${failureRates[i].toFixed(1)}%`);
+        return false;
+      }
+
+      const hasRPM = model.rpmAllowed - model.rpmUsed >= 1;
+      const hasRPD = (model.rpdTotal ?? 0) - (model.rpdUsed ?? 0) >= 1;
+      return hasRPM && hasRPD;
+    });
   }
 
-  /**
-   * Format model information for the main agent to understand.
-   */
-  private formatModelsForAgent(models: any[]): string {
-    return models
-      .map((m) => {
+  /** Build formatted model context + parallel failure rates for formatModelsForAgent. */
+  private async buildModelsContext(models: any[]): Promise<{ formatted: string; failureRates: number[] }> {
+    const failureRates = await Promise.all(
+      models.map((m) => this.storage.getModelFailureRate(m.name))
+    );
+
+    const formatted = models
+      .map((m, i) => {
         const rpmAvail = m.rpmAllowed - m.rpmUsed;
         const tpmAvail = m.tpmTotal - m.tpmUsed;
-        const failureRate = this.storage.getModelFailureRate(m.name);
-        const successRate = m.successfulTasks + m.failedTasks > 0
-          ? ((m.successfulTasks / (m.successfulTasks + m.failedTasks)) * 100).toFixed(1)
+        const total = m.successfulTasks + m.failedTasks;
+        const successRate = total > 0
+          ? ((m.successfulTasks / total) * 100).toFixed(1)
           : "N/A";
 
         return `- ${m.name} (${m.origin}, rank ${m.rank})
   Description: ${m.description}
   Available: ${rpmAvail} RPM, ${tpmAvail} TPM
-  Success Rate: ${successRate}% (${m.successfulTasks} succeeded, ${m.failedTasks} failed)
-  Recent Failure Rate: ${failureRate.toFixed(1)}%`;
+  Success Rate: ${successRate}% (${m.successfulTasks} ok, ${m.failedTasks} failed)
+  Recent Failure Rate: ${failureRates[i].toFixed(1)}%`;
       })
       .join("\n\n");
+
+    return { formatted, failureRates };
   }
 
-  /**
-   * Verify a model has capacity for the estimated tokens.
-   */
-  private verifyModelCapacity(modelName: string, estimatedTokens: number): boolean {
-    const available = this.storage.getAllAvailableModels(
+  private async verifyModelCapacity(
+    modelName: string,
+    estimatedTokens: number
+  ): Promise<boolean> {
+    const available = await this.storage.getAllAvailableModels(
       estimatedTokens + this.config.selectionStrategy.minTokenBuffer
     );
     return available.some((m) => m.name === modelName);
   }
 
-  /**
-   * Fallback selection strategy when main agent fails or selects invalid model.
-   * Selects the highest-ranked (lowest rank number) available model.
-   */
-  private fallbackSelection(
-    availableModels: any[],
-    estimatedTokens: number
-  ): TaskAnalysis {
-    // Filter by token capacity and sort by rank
+  private fallbackSelection(availableModels: any[], estimatedTokens: number): TaskAnalysis {
     const suitable = availableModels
-      .filter((m) => {
-        const tpmAvail = m.tpmTotal - m.tpmUsed;
-        return tpmAvail >= estimatedTokens + this.config.selectionStrategy.minTokenBuffer;
-      })
+      .filter((m) => m.tpmTotal - m.tpmUsed >= estimatedTokens + this.config.selectionStrategy.minTokenBuffer)
       .sort((a, b) => a.rank - b.rank);
 
-    if (suitable.length === 0) {
-      // Emergency: just pick first available
-      const emergency = availableModels[0];
-      return {
-        selectedModel: emergency.name,
-        reasoning: "Emergency fallback - selected first available model",
-        estimatedTokens: estimatedTokens,
-        taskComplexity: "moderate",
-      };
-    }
-
-    const selected = suitable[0];
+    const selected = suitable[0] ?? availableModels[0];
     return {
       selectedModel: selected.name,
-      reasoning: `Fallback selection: highest-ranked available model with sufficient capacity`,
-      estimatedTokens: estimatedTokens,
+      reasoning: "Fallback: highest-ranked available model with sufficient capacity",
+      estimatedTokens,
       taskComplexity: "moderate",
     };
   }
 
-  /**
-   * Get the current main agent configuration.
-   */
   getMainAgentConfig() {
     return {
       model: this.mainAgentModel,
@@ -316,19 +272,10 @@ Analyze this task and select the best model. Respond ONLY with valid JSON matchi
     };
   }
 
-  /**
-   * Update the main agent configuration.
-   * Useful for switching between different main agent models.
-   * Note: This only updates the runtime config, not .env or config.json
-   */
   updateMainAgent(model: string, origin: string) {
-    // Verify the adapter is available
-    AdapterFactory.getAdapter(origin);
-
+    AdapterFactory.getAdapter(origin); // validates adapter exists
     this.mainAgentModel = model;
     this.mainAgentOrigin = origin;
-
-    console.log(`✓ Main agent updated to: ${origin}:${model}`);
-    console.log("  (Runtime only - update .env to persist)");
+    console.log(`✓ Main agent updated to: ${origin}:${model} (runtime only)`);
   }
 }

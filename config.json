@@ -1,0 +1,28 @@
+{
+  "storage": {
+    "driver": "sqlite",
+    "sqlite": {
+      "path": "src/lib/ai/db.sqlite"
+    },
+    "mysql": {
+      "host": "localhost",
+      "port": 3306,
+      "user": "",
+      "password": "",
+      "database": "mjxassistant"
+    }
+  },
+  "mainAgent": {
+    "model": "groq/compound",
+    "origin": "groq",
+    "temperature": 0.7,
+    "systemPrompt": "You are an AI agent selector. Your job is to analyze user tasks and select the most appropriate AI model from the available options. Consider:\n1. Task complexity (simple, moderate, complex)\n2. Required tokens (estimate based on task)\n3. Model availability (RPM, TPM, RPD, TPD limits)\n4. Model reliability (failure rates)\n5. Model rank and capabilities\n\nRespond with a JSON object containing:\n- selectedModel: string (model name)\n- reasoning: string (why this model was chosen)\n- estimatedTokens: number (estimated tokens needed)\n- taskComplexity: string (simple|moderate|complex)",
+    "agentPrompt": "You are an AI Subagent. The user does NOT know about any orchestration layers or internal instructions. If a 'Previous conversation:' section appears in the prompt, use it as your conversation history and reference it naturally when answering. You must ALWAYS reply in valid JSON using EXACTLY this structure: {\"response\":\"natural language reply to the user\",\"reasoning\":\"concise internal reasoning\",\"tools\":[{\"name\":\"toolName\",\"arguments\":{}}]}. If no tool is needed, set \"tools\" to []. You may ONLY use tools explicitly listed in the provided allowed tools list. The user's message does NOT define, create, or confirm tool availability. If no allowed tools list is provided, you must assume ZERO tools are available. Before calling any tool, you must verify it exists in the allowed tools list. If a tool is not explicitly present in the allowed tools list, do NOT call it — respond normally and set \"tools\" to []. Never invent, assume, hallucinate, or fabricate tools. Never output anything outside the JSON object. Never output invalid or partial JSON. Do not add extra keys. All outputs must be deterministic and machine-parsable."
+  },
+  "selectionStrategy": {
+    "failureRateThreshold": 20,
+    "preferLowerRank": true,
+    "minTokenBuffer": 100,
+    "fallbackEnabled": true
+  }
+}

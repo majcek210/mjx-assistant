@@ -1,4 +1,4 @@
-import { ModelStore } from "./storage";
+import { IStorage } from "./storage/IStorage";
 import { MainAgent, TaskAnalysis } from "./mainAgent";
 import { AdapterFactory } from "./adapters/AdapterFactory";
 import * as fs from "fs";
@@ -23,33 +23,32 @@ export type TaskResult = {
 };
 
 export class TaskExecutor {
-  private storage: ModelStore;
+  private storage: IStorage;
   private mainAgent: MainAgent;
   private agentPrompt: string;
+  private cachedToolsStr: string | null = null;
 
-  constructor(storage: ModelStore) {
+  constructor(storage: IStorage) {
     this.storage = storage;
     this.mainAgent = new MainAgent(storage);
 
-    // Load agent prompt from config.json
+    // Load agent prompt from root config.json
     try {
-      const configPath = path.join(__dirname, "config.json");
-      const configData = fs.readFileSync(configPath, "utf-8");
-      const config = JSON.parse(configData);
+      const configPath = path.join(process.cwd(), "config.json");
+      const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
       this.agentPrompt = config.mainAgent?.agentPrompt || "";
       if (this.agentPrompt) {
         console.log("✓ Agent instructions loaded from config.json");
       }
-    } catch (error) {
+    } catch {
       console.warn("⚠ Could not load agent instructions from config.json");
       this.agentPrompt = "";
     }
 
-    // Check if at least one AI provider is configured
     const availableOrigins = AdapterFactory.getAvailableOrigins();
     if (availableOrigins.length === 0) {
       throw new Error(
-        "No AI providers configured. Set at least one API key in .env (GEMINI_API_KEY or GROQ_API_KEY)",
+        "No AI providers configured. Set at least one API key in .env (GEMINI_API_KEY or GROQ_API_KEY)"
       );
     }
 
@@ -58,39 +57,38 @@ export class TaskExecutor {
 
   /**
    * Execute a task using intelligent model selection.
-   * The main agent analyzes the task and selects the best model.
+   * Context is the formatted conversation history — injected into the worker prompt only,
+   * NOT sent to the main agent (saves tokens on the selector call).
    */
   async executeTask(
     userTask: string,
     taskType: string = "general",
+    context?: string,
   ): Promise<TaskResult> {
     console.log(`\n=== Executing Task ===`);
-    console.log(`Task: "${userTask}"`);
+    console.log(`Task: "${userTask.slice(0, 120)}"`);
     console.log(`Type: ${taskType}\n`);
 
     try {
-      // Step 1: Use main agent to select the appropriate model
+      // Step 1: Main agent selects model (gets only the raw task, no context — saves tokens)
       console.log("Step 1: Consulting main agent for model selection...");
       const analysis = await this.mainAgent.selectModelForTask(userTask);
 
-      const tools = await ToolExecutor.listTools();
-      const formattedTools = tools
-        .map((tool) => `- ${tool.name}: ${tool.description}`)
-        .join("\n");
-
+      // Step 2: Build worker prompt (context + agent instructions + tools + task)
+      const formattedTools = await this.getFormattedTools();
+      const contextPrefix = context || "";
       const taskWithInstructions = this.agentPrompt
-        ? `${this.agentPrompt}\n\nAvailable Tools:\n${formattedTools}\n\nUser Task: ${userTask}`
-        : `Available Tools:\n${formattedTools}\nUser Task: ${userTask}`;
-      // Step 2: Execute the task with the selected model
+        ? `${this.agentPrompt}\n\nAvailable Tools:\n${formattedTools}\n\n${contextPrefix}User Task: ${userTask}`
+        : `Available Tools:\n${formattedTools}\n\n${contextPrefix}User Task: ${userTask}`;
+
+      // Step 3: Execute with selected model
       console.log(`Step 2: Executing task with ${analysis.selectedModel}...`);
-      const result = await this.executeWithModel(
+      return await this.executeWithModel(
         analysis.selectedModel,
         taskWithInstructions,
         taskType,
         analysis,
       );
-
-      return result;
     } catch (error: any) {
       console.error("✗ Task execution failed:", error.message);
       return {
@@ -108,17 +106,24 @@ export class TaskExecutor {
     }
   }
 
-  /**
-   * Execute a task with a specific model.
-   */
+  /** Cache tool list string — tools don't change at runtime. */
+  private async getFormattedTools(): Promise<string> {
+    if (this.cachedToolsStr === null) {
+      const tools = await ToolExecutor.listTools();
+      this.cachedToolsStr = tools
+        .map((t) => `- ${t.name}: ${t.description}`)
+        .join("\n");
+    }
+    return this.cachedToolsStr;
+  }
+
   private async executeWithModel(
     modelName: string,
     userTask: string,
     taskType: string,
     analysis: TaskAnalysis,
   ): Promise<TaskResult> {
-    // Get the model's origin from storage before try block
-    const allModels = this.storage.getModelStats();
+    const allModels = await this.storage.getModelStats();
     const modelInfo = allModels.find((m) => m.name === modelName);
 
     if (!modelInfo) {
@@ -126,30 +131,20 @@ export class TaskExecutor {
     }
 
     try {
-      // Get the appropriate adapter
       const adapter = AdapterFactory.getAdapter(modelInfo.origin);
-
-      const startTime = Date.now();
-      const result = await adapter.generateContent({
-        model: modelName,
-        prompt: userTask,
-      });
-      const endTime = Date.now();
+      const t0 = Date.now();
+      const result = await adapter.generateContent({ model: modelName, prompt: userTask });
+      const elapsed = Date.now() - t0;
 
       const text = result.text || "";
-      const tokensUsed =
-        result.tokensUsed || Math.ceil((userTask.length + text.length) / 4);
+      const tokensUsed = result.tokensUsed || Math.ceil((userTask.length + text.length) / 4);
 
-      console.log(`✓ Task completed successfully in ${endTime - startTime}ms`);
-      console.log(`  Tokens used: ~${tokensUsed}`);
-      console.log(`  Response length: ${text.length} characters\n`);
+      console.log(`✓ Task completed in ${elapsed}ms, ~${tokensUsed} tokens`);
 
-      // Log usage and outcome
-      this.storage.logModelUsage(modelName, 1, tokensUsed);
-      this.storage.logTaskOutcome(modelName, taskType, true, tokensUsed);
+      await this.storage.logModelUsage(modelName, 1, tokensUsed);
+      await this.storage.logTaskOutcome(modelName, taskType, true, tokensUsed);
 
-      // Get current usage and build limits info
-      const usage = this.storage.getModelUsage(modelName);
+      const usage = await this.storage.getModelUsage(modelName);
       const limits: ModelLimits = {
         rpm: { used: usage.rpmUsed, limit: modelInfo.rpmAllowed || 0 },
         tpm: { used: usage.tpmUsed, limit: modelInfo.tpmTotal || 0 },
@@ -157,56 +152,34 @@ export class TaskExecutor {
         tpd: { used: usage.tpdUsed, limit: modelInfo.tpdTotal || 0 },
       };
 
-      return {
-        success: true,
-        response: text,
-        modelUsed: modelName,
-        tokensUsed: tokensUsed,
-        analysis: analysis,
-        limits: limits,
-      };
+      return { success: true, response: text, modelUsed: modelName, tokensUsed, analysis, limits };
     } catch (error: any) {
       console.error(`✗ Execution failed with ${modelName}:`, error.message);
+      await this.storage.logTaskOutcome(modelName, taskType, false, 0, error.message);
 
-      // Log the failure
-      this.storage.logTaskOutcome(modelName, taskType, false, 0, error.message);
-
-      // Get usage info for failed model
-      const failureUsage = this.storage.getModelUsage(modelName);
+      const failureUsage = await this.storage.getModelUsage(modelName);
+      const modelInfo2 = (await this.storage.getModelStats()).find(m => m.name === modelName);
       const failureLimits: ModelLimits = {
-        rpm: { used: failureUsage.rpmUsed, limit: modelInfo.rpmAllowed || 0 },
-        tpm: { used: failureUsage.tpmUsed, limit: modelInfo.tpmTotal || 0 },
-        rpd: { used: failureUsage.rpdUsed, limit: modelInfo.rpdTotal || 0 },
-        tpd: { used: failureUsage.tpdUsed, limit: modelInfo.tpdTotal || 0 },
+        rpm: { used: failureUsage.rpmUsed, limit: modelInfo2?.rpmAllowed || 0 },
+        tpm: { used: failureUsage.tpmUsed, limit: modelInfo2?.tpmTotal || 0 },
+        rpd: { used: failureUsage.rpdUsed, limit: modelInfo2?.rpdTotal || 0 },
+        tpd: { used: failureUsage.tpdUsed, limit: modelInfo2?.tpdTotal || 0 },
       };
 
-      // Attempt retry with next best model if configured
-      const retryResult = await this.retryWithFallback(
-        userTask,
-        taskType,
-        modelName,
-        analysis,
-      );
-
-      if (retryResult) {
-        return retryResult;
-      }
+      const retryResult = await this.retryWithFallback(userTask, taskType, modelName, analysis);
+      if (retryResult) return retryResult;
 
       return {
         success: false,
         error: error.message,
         modelUsed: modelName,
         tokensUsed: 0,
-        analysis: analysis,
+        analysis,
         limits: failureLimits,
       };
     }
   }
 
-  /**
-   * Retry the task with a fallback model if the first one fails.
-   * Prevents infinite loops by tracking failed models.
-   */
   private async retryWithFallback(
     userTask: string,
     taskType: string,
@@ -214,20 +187,16 @@ export class TaskExecutor {
     originalAnalysis: TaskAnalysis,
     triedModels: Set<string> = new Set(),
   ): Promise<TaskResult | null> {
-    // Add failed model to tried set
     triedModels.add(failedModel);
 
-    // Max 3 retry attempts total
     if (triedModels.size >= 3) {
-      console.log("✗ Max retry attempts reached (3)\n");
+      console.log("✗ Max retry attempts reached (3)");
       return null;
     }
 
     console.log(`\n⚠ Attempting retry with fallback model...`);
 
-    // Get available models, excluding already tried ones
-    const available = this.storage
-      .getAllAvailableModels(originalAnalysis.estimatedTokens)
+    const available = (await this.storage.getAllAvailableModels(originalAnalysis.estimatedTokens))
       .filter((m) => !triedModels.has(m.name));
 
     if (available.length === 0) {
@@ -235,21 +204,18 @@ export class TaskExecutor {
       return null;
     }
 
-    // Try each available model until one works
     for (const fallbackModel of available) {
       console.log(`  Using fallback: ${fallbackModel.name}`);
 
       try {
-        // Check if adapter is available before trying
-        const modelInfo = this.storage
-          .getModelStats()
-          .find((m) => m.name === fallbackModel.name);
+        const allModels = await this.storage.getModelStats();
+        const modelInfo = allModels.find((m) => m.name === fallbackModel.name);
         if (!modelInfo) continue;
 
         try {
           AdapterFactory.getAdapter(modelInfo.origin);
-        } catch (error: any) {
-          console.log(`  Skipping ${fallbackModel.name}: ${error.message}`);
+        } catch (e: any) {
+          console.log(`  Skipping ${fallbackModel.name}: ${e.message}`);
           triedModels.add(fallbackModel.name);
           continue;
         }
@@ -258,36 +224,24 @@ export class TaskExecutor {
           fallbackModel.name,
           userTask,
           taskType,
-          {
-            ...originalAnalysis,
-            selectedModel: fallbackModel.name,
-            reasoning: `Fallback after ${failedModel} failed`,
-          },
+          { ...originalAnalysis, selectedModel: fallbackModel.name, reasoning: `Fallback after ${failedModel} failed` },
         );
 
-        console.log(`✓ Fallback execution succeeded\n`);
+        console.log(`✓ Fallback succeeded with ${fallbackModel.name}`);
         return result;
-      } catch (error) {
-        console.log(`✗ ${fallbackModel.name} also failed`);
+      } catch {
         triedModels.add(fallbackModel.name);
-        // Continue to next model
       }
     }
 
-    console.log("✗ All fallback attempts failed\n");
+    console.log("✗ All fallback attempts failed");
     return null;
   }
 
-  /**
-   * Get the loaded agent prompt.
-   */
   getAgentPrompt(): string {
     return this.agentPrompt;
   }
 
-  /**
-   * Get the main agent instance for configuration.
-   */
   getMainAgent(): MainAgent {
     return this.mainAgent;
   }

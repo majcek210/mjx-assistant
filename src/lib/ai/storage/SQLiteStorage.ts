@@ -1,4 +1,6 @@
 import Database from "better-sqlite3";
+import * as fs from "fs";
+import * as nodePath from "path";
 import { IStorage, Model, ModelUsage, TaskLog } from "./IStorage";
 
 /**
@@ -8,7 +10,8 @@ import { IStorage, Model, ModelUsage, TaskLog } from "./IStorage";
 export class SQLiteStorage implements IStorage {
   private db: Database.Database;
 
-  constructor(path = "src/lib/ai/db.sqlite") {
+  constructor(path = "data/db.sqlite") {
+    fs.mkdirSync(nodePath.dirname(nodePath.resolve(path)), { recursive: true });
     this.db = new Database(path);
     this.createTables();
     this.migrateDatabase();

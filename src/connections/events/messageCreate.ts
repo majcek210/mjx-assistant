@@ -1,10 +1,10 @@
 import { Events, EmbedBuilder } from "discord.js";
-import AIAgent from "../../configs/AIAgent";
-import parse from "../../lib/reponseParser";
-import ToolExecutor from "../../configs/toolExecutor";
-import { buildContext, formatContext, formatReferencedMessage } from "../../lib/contextMemory";
-import { sessionMemory } from "../../lib/sessionMemory";
-import { setClient } from "../../lib/discordClient";
+import AIAgent from "../../services/AIAgent";
+import parse from "../../lib/responseParser";
+import ToolExecutor from "../../services/toolExecutor";
+import { buildContext, formatContext, formatReferencedMessage } from "../../lib/context/contextMemory";
+import { sessionMemory } from "../../lib/context/sessionMemory";
+import { setClient } from "../../lib/bot/discordClient";
 
 export default {
   name: Events.MessageCreate,

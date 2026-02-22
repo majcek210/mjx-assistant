@@ -3,7 +3,7 @@ import { MainAgent, TaskAnalysis } from "./mainAgent";
 import { AdapterFactory } from "./adapters/AdapterFactory";
 import * as fs from "fs";
 import * as path from "path";
-import ToolExecutor from "../../configs/toolExecutor";
+import ToolExecutor from "../../services/toolExecutor";
 
 export type ModelLimits = {
   rpm: { used: number; limit: number };

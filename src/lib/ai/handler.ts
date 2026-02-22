@@ -4,7 +4,7 @@ import { TaskExecutor } from "./taskExecutor";
 import fs from "fs";
 import path from "path";
 
-const modelsFolder = "./src/lib/ai/models";
+const modelsFolder = path.join(__dirname, "models");
 
 function parseFile(file: string) {
   const filePath = path.join(modelsFolder, file);

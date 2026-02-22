@@ -1,4 +1,4 @@
-import { getClient } from "./discordClient";
+import { getClient } from "./bot/discordClient";
 import { toolDatabase } from "./ai/toolDatabase";
 
 const POLL_INTERVAL_MS = 60_000;

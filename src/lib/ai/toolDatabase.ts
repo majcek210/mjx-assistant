@@ -35,7 +35,7 @@ function resolveDriver(): { driver: Driver; sqlitePath?: string; mysql?: any } {
   if (driver === "sqlite") {
     return {
       driver: "sqlite",
-      sqlitePath: process.env.DB_PATH || cfg.storage?.sqlite?.path || "src/lib/ai/db.sqlite",
+      sqlitePath: process.env.DB_PATH || cfg.storage?.sqlite?.path || "data/db.sqlite",
     };
   }
 
@@ -62,7 +62,9 @@ export class ToolDatabase {
 
     if (resolved.driver === "sqlite") {
       const Database = require("better-sqlite3");
-      this.sqliteDb = new Database(path.join(process.cwd(), resolved.sqlitePath!));
+      const absPath = path.join(process.cwd(), resolved.sqlitePath!);
+      fs.mkdirSync(path.dirname(absPath), { recursive: true });
+      this.sqliteDb = new Database(absPath);
       this.sqliteDb.pragma("journal_mode = WAL");
       this.sqliteDb.pragma("foreign_keys = ON");
       console.log(`✓ ToolDatabase: SQLite (${resolved.sqlitePath}) — shared with main storage`);

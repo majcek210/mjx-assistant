@@ -2,7 +2,7 @@
   "storage": {
     "driver": "sqlite",
     "sqlite": {
-      "path": "src/lib/ai/db.sqlite"
+      "path": "data/db.sqlite"
     },
     "mysql": {
       "host": "localhost",

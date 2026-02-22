@@ -25,7 +25,7 @@ export class StorageFactory {
     switch (driver) {
       case "sqlite": {
         const dbPath =
-          process.env.DB_PATH || cfg.storage?.sqlite?.path || "src/lib/ai/db.sqlite";
+          process.env.DB_PATH || cfg.storage?.sqlite?.path || "data/db.sqlite";
         console.log(`✓ Storage: SQLite (${dbPath})`);
         return new SQLiteStorage(dbPath);
       }

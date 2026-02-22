@@ -7,6 +7,7 @@ export class ToolExecutor {
   private tools: Map<string, Tool> = new Map();
   private toolsDir: string;
   private isInitialized = false;
+  private _initPromise: Promise<void> | null = null;
 
   constructor(toolsDir?: string) {
     this.toolsDir = toolsDir || path.join(__dirname, "tools");
@@ -14,9 +15,17 @@ export class ToolExecutor {
 
   /**
    * Load all tools, create their DB tables, and call init(db) on each.
-   * Safe to call multiple times — only runs once.
+   * Safe to call multiple times — returns the same Promise so concurrent
+   * callers all wait for the single initialization to complete.
    */
-  async initialize(): Promise<void> {
+  initialize(): Promise<void> {
+    if (!this._initPromise) {
+      this._initPromise = this._doInitialize();
+    }
+    return this._initPromise;
+  }
+
+  private async _doInitialize(): Promise<void> {
     if (this.isInitialized) return;
 
     if (!fs.existsSync(this.toolsDir)) {
@@ -82,6 +91,7 @@ export class ToolExecutor {
   }
 
   async executeTool(toolName: string, args: Record<string, any> = {}): Promise<ToolExecutionResult> {
+    await this.initialize();
     try {
       if (!this.tools.has(toolName)) {
         return this.errorResponse(

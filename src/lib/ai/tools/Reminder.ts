@@ -2,29 +2,26 @@ import { Tool } from "./Tool";
 import { ToolDatabase } from "../toolDatabase";
 
 /**
- * Reminder tool — DB-backed, with real scheduled delivery.
+ * Reminder tool — stored in the main project DB (same backend as model storage).
  *
- * Reminders are stored in tools.db and delivered by ReminderScheduler
- * (src/lib/reminderScheduler.ts) which polls every minute.
+ * Reminders are delivered by ReminderScheduler (src/lib/reminderScheduler.ts)
+ * which polls every minute.
  *
- * channelId and userId are automatically injected by the messageCreate handler —
- * the AI does NOT need to provide them.
+ * channelId and userId are auto-injected by the messageCreate handler.
  *
  * Actions:
  *   create  — schedule a reminder
  *   list    — show pending reminders for this user
  *   delete  — cancel a reminder by id
  *
- * Time formats accepted (create):
- *   Relative: 30s, 10m, 2h, 1d
- *   Absolute: any string parseable by new Date() (ISO 8601, "tomorrow at 9am", etc.)
+ * Time formats: relative (30s, 10m, 2h, 1d) or absolute ISO 8601 string.
  */
 const ReminderTool: Tool = {
   name: "reminder",
   description:
-    'Create, list, or delete scheduled reminders stored in the database. ' +
-    'Arguments: { action: "create"|"list"|"delete", message?: string, time?: string (e.g. "30m", "2h", "2026-03-01T09:00:00"), id?: number }. ' +
-    'channelId and userId are injected automatically — do NOT include them.',
+    'Schedule, list, or delete reminders stored persistently in the database. ' +
+    'Arguments: { action: "create"|"list"|"delete", message?: string, time?: string (e.g. "30m", "2h", "2026-03-01T09:00"), id?: number }. ' +
+    'channelId and userId are injected automatically.',
 
   tableSchema: [
     `CREATE TABLE IF NOT EXISTS reminders (
@@ -36,29 +33,29 @@ const ReminderTool: Tool = {
       created_at  INTEGER NOT NULL DEFAULT (strftime('%s','now')),
       delivered   INTEGER NOT NULL DEFAULT 0
     )`,
-    `CREATE INDEX IF NOT EXISTS idx_reminders_remind_at ON reminders(remind_at, delivered)`,
+    `CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(remind_at, delivered)`,
   ],
 
   init(db: ToolDatabase) {
     (this as any)._db = db;
   },
 
-  execute(args: Record<string, any>) {
+  async execute(args: Record<string, any>) {
     const db: ToolDatabase = (this as any)._db;
     const { action, message, time, channelId, userId, id } = args;
 
-    if (!action) return { error: 'Missing required argument: action ("create", "list", or "delete")' };
+    if (!action) return { error: 'Missing argument: action ("create", "list", or "delete")' };
 
     switch (String(action).toLowerCase()) {
       case "create": {
         if (!message) return { error: "Missing argument: message" };
-        if (!time) return { error: "Missing argument: time (e.g. '30m', '2h', '2026-03-01T09:00')" };
-        if (!channelId || !userId) return { error: "Missing channelId or userId (injected automatically)" };
+        if (!time) return { error: 'Missing argument: time (e.g. "30m", "2h", "2026-03-01T09:00")' };
+        if (!channelId || !userId) return { error: "Missing channelId or userId (auto-injected by handler)" };
 
         const remindAt = parseTime(time);
         if (!remindAt) return { error: `Cannot parse time "${time}". Use: 30s, 10m, 2h, 1d, or ISO 8601.` };
 
-        const result = db.run(
+        const result = await db.run(
           `INSERT INTO reminders (channel_id, user_id, message, remind_at) VALUES (?, ?, ?, ?)`,
           [channelId, userId, message, remindAt]
         );
@@ -75,7 +72,7 @@ const ReminderTool: Tool = {
       case "list": {
         if (!userId) return { error: "Missing userId" };
 
-        const rows = db.query<any>(
+        const rows = await db.query<any>(
           `SELECT id, message, remind_at FROM reminders
            WHERE user_id = ? AND delivered = 0
            ORDER BY remind_at ASC`,
@@ -96,7 +93,7 @@ const ReminderTool: Tool = {
         if (!id) return { error: "Missing argument: id" };
         if (!userId) return { error: "Missing userId" };
 
-        const result = db.run(
+        const result = await db.run(
           `DELETE FROM reminders WHERE id = ? AND user_id = ?`,
           [Number(id), userId]
         );
@@ -111,20 +108,14 @@ const ReminderTool: Tool = {
 };
 
 function parseTime(input: string): number | null {
-  // Relative: 30s, 10m, 2h, 1d (case-insensitive)
   const rel = input.trim().match(/^(\d+)(s|m|h|d)$/i);
   if (rel) {
     const n = parseInt(rel[1], 10);
-    const unit = rel[2].toLowerCase();
     const mult: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86400 };
-    return Math.floor(Date.now() / 1000) + n * mult[unit];
+    return Math.floor(Date.now() / 1000) + n * mult[rel[2].toLowerCase()];
   }
-
-  // Absolute date string
   const d = new Date(input);
-  if (!isNaN(d.getTime())) return Math.floor(d.getTime() / 1000);
-
-  return null;
+  return isNaN(d.getTime()) ? null : Math.floor(d.getTime() / 1000);
 }
 
 export default ReminderTool;

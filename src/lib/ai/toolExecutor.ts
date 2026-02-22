@@ -24,7 +24,7 @@ export class ToolExecutor {
     }
 
     await this.loadToolsFromDirectory();
-    this.initToolSchemas();
+    await this.initToolSchemas();
     this.isInitialized = true;
   }
 
@@ -60,11 +60,11 @@ export class ToolExecutor {
    * 1. Run its tableSchema DDL statements against the shared ToolDatabase.
    * 2. Call tool.init(db) so the tool can store its DB reference.
    */
-  private initToolSchemas(): void {
+  private async initToolSchemas(): Promise<void> {
     for (const [, tool] of this.tools) {
       if (tool.tableSchema) {
         for (const ddl of tool.tableSchema) {
-          toolDatabase.createTable(ddl);
+          await toolDatabase.createTable(ddl);
         }
       }
       if (typeof tool.init === "function") {

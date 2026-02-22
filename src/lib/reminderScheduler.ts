@@ -1,18 +1,16 @@
 import { getClient } from "./discordClient";
 import { toolDatabase } from "./ai/toolDatabase";
 
-const POLL_INTERVAL_MS = 60_000; // check every minute
+const POLL_INTERVAL_MS = 60_000;
 
 /**
  * Polls the reminders table every minute and delivers any due reminders
  * to the appropriate Discord channel via @mention.
  *
- * Must be called after the Discord client is available (i.e. after client.start()).
- * The first delivery attempt happens 30 seconds after calling start() to give
- * the client time to connect.
+ * Uses the same toolDatabase that tools use, which in turn connects to
+ * the same backend (SQLite file or MySQL database) as the main storage.
  */
 export function startReminderScheduler(): void {
-  // Delay the first tick slightly to let the Discord client finish connecting
   setTimeout(() => {
     deliverDueReminders();
     setInterval(deliverDueReminders, POLL_INTERVAL_MS);
@@ -23,21 +21,20 @@ export function startReminderScheduler(): void {
 
 async function deliverDueReminders(): Promise<void> {
   const client = getClient();
-  if (!client) return; // Discord not connected yet
+  if (!client) return;
 
   const now = Math.floor(Date.now() / 1000);
 
   let dueReminders: any[];
   try {
-    dueReminders = toolDatabase.query<any>(
+    dueReminders = await toolDatabase.query<any>(
       `SELECT id, channel_id, user_id, message FROM reminders
        WHERE remind_at <= ? AND delivered = 0
        ORDER BY remind_at ASC`,
       [now]
     );
   } catch {
-    // Table may not exist yet (no reminders created); ignore silently
-    return;
+    return; // Table not yet created (no reminders stored yet)
   }
 
   for (const reminder of dueReminders) {
@@ -47,7 +44,7 @@ async function deliverDueReminders(): Promise<void> {
 
       await channel.send(`<@${reminder.user_id}> ⏰ **Reminder:** ${reminder.message}`);
 
-      toolDatabase.run(
+      await toolDatabase.run(
         `UPDATE reminders SET delivered = 1 WHERE id = ?`,
         [reminder.id]
       );
@@ -55,7 +52,6 @@ async function deliverDueReminders(): Promise<void> {
       console.log(`✓ Delivered reminder #${reminder.id} to channel ${reminder.channel_id}`);
     } catch (error) {
       console.error(`✗ Failed to deliver reminder #${reminder.id}:`, error);
-      // Leave delivered = 0 so it retries next tick
     }
   }
 }
